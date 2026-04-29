@@ -21,6 +21,9 @@ logs/
 # Rust
 rust/target/
 
+# 自動下載的 ffmpeg
+ffmpeg-bin/
+
 # IDE
 .idea/
 .vscode/

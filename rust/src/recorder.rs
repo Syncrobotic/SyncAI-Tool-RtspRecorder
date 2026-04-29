@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
 use crate::converter;
+use crate::ffmpeg::FfmpegPaths;
 use crate::stats::Stats;
 
 /// 檢查是否為錄製時間
@@ -68,6 +69,7 @@ async fn record_channel(
     channel: u32,
     stats: Arc<Mutex<Stats>>,
     mut shutdown: broadcast::Receiver<()>,
+    ff: &FfmpegPaths,
 ) -> Result<()> {
     let url = format!("{}/chID={}&streamType=main&linkType=tcp", config.rtsp.base_url, channel);
     let output_dir = &config.output.dir;
@@ -103,7 +105,7 @@ async fn record_channel(
         
         tracing::info!("[CH{}] 啟動錄製（每 {}s 分段）", channel, current_duration);
 
-        let mut child = Command::new("ffmpeg")
+        let mut child = Command::new(&ff.ffmpeg)
             .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -161,6 +163,7 @@ async fn background_converter(
     output_dir: PathBuf,
     stats: Arc<Mutex<Stats>>,
     mut shutdown: broadcast::Receiver<()>,
+    ff: FfmpegPaths,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     
@@ -176,7 +179,7 @@ async fn background_converter(
                             if let Ok(metadata) = path.metadata() {
                                 if let Ok(modified) = metadata.modified() {
                                     if modified.elapsed().map(|d| d.as_secs() > 10).unwrap_or(false) {
-                                        match converter::convert_to_mp4(&path).await {
+                                        match converter::convert_to_mp4(&path, &ff).await {
                                             Ok(Some(_)) => {
                                                 let mut stats = stats.lock().await;
                                                 stats.record_conversion(true);
@@ -202,7 +205,7 @@ async fn background_converter(
 }
 
 /// 執行 daemon 模式
-pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>) -> Result<()> {
+pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPaths) -> Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
 
     // 設定 Ctrl+C 處理
@@ -217,8 +220,9 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>) -> Result<()>
     let converter_stats = stats.clone();
     let converter_shutdown = shutdown_tx.subscribe();
     let output_dir = config.output.dir.clone();
+    let converter_ff = ff.clone();
     tokio::spawn(async move {
-        background_converter(output_dir, converter_stats, converter_shutdown).await;
+        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff).await;
     });
 
     // 記錄啟動
@@ -241,8 +245,9 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>) -> Result<()>
             let config = config.clone();
             let rx = shutdown_tx.subscribe();
             let channel_stats = stats.clone();
+            let ch_ff = ff.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = record_channel(&config, ch, channel_stats, rx).await {
+                if let Err(e) = record_channel(&config, ch, channel_stats, rx, &ch_ff).await {
                     tracing::error!("[CH{}] 錯誤: {}", ch, e);
                 }
             }));
@@ -268,7 +273,7 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>) -> Result<()>
 }
 
 /// 手動錄製一次
-pub async fn record_once(config: &Config, duration: u32, channels: &str) -> Result<()> {
+pub async fn record_once(config: &Config, duration: u32, channels: &str, _ff: &FfmpegPaths) -> Result<()> {
     tracing::info!("手動錄製 {}s, 頻道: {}", duration, channels);
     // TODO: 解析頻道範圍並錄製
     Ok(())

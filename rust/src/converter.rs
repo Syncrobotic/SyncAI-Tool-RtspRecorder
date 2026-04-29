@@ -3,9 +3,11 @@ use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
+use crate::ffmpeg::FfmpegPaths;
+
 /// 偵測影片編碼格式
-pub async fn detect_video_codec(file_path: &Path) -> Option<String> {
-    let output = Command::new("ffprobe")
+pub async fn detect_video_codec(file_path: &Path, ff: &FfmpegPaths) -> Option<String> {
+    let output = Command::new(&ff.ffprobe)
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -28,13 +30,13 @@ pub async fn detect_video_codec(file_path: &Path) -> Option<String> {
 }
 
 /// 轉檔 MKV -> MP4
-pub async fn convert_to_mp4(mkv_path: &Path) -> Result<Option<std::path::PathBuf>> {
+pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<std::path::PathBuf>> {
     if !mkv_path.exists() {
         return Ok(None);
     }
 
     let mp4_path = mkv_path.with_extension("mp4");
-    let codec = detect_video_codec(mkv_path).await;
+    let codec = detect_video_codec(mkv_path, ff).await;
 
     if let Some(ref c) = codec {
         tracing::info!("[轉檔] 偵測到 {} 編碼: {:?}", c.to_uppercase(), mkv_path.file_name());
@@ -64,7 +66,7 @@ pub async fn convert_to_mp4(mkv_path: &Path) -> Result<Option<std::path::PathBuf
 
         args.push(mp4_path.to_str().unwrap());
 
-        let status = Command::new("ffmpeg")
+        let status = Command::new(&ff.ffmpeg)
             .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -80,7 +82,7 @@ pub async fn convert_to_mp4(mkv_path: &Path) -> Result<Option<std::path::PathBuf
     }
 
     // 重新編碼為 H.264
-    let status = Command::new("ffmpeg")
+    let status = Command::new(&ff.ffmpeg)
         .args([
             "-y",
             "-fflags", "+genpts+igndts+discardcorrupt",

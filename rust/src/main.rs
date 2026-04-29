@@ -6,7 +6,9 @@ use tokio::sync::Mutex;
 
 mod config;
 mod converter;
+mod ffmpeg;
 mod recorder;
+mod setup;
 mod stats;
 mod uploader;
 
@@ -50,6 +52,10 @@ enum Commands {
     },
     /// 安裝 systemd 服務
     InstallService,
+    /// 檢查設定與環境
+    Check,
+    /// 互動式初始設定
+    Setup,
 }
 
 #[tokio::main]
@@ -61,8 +67,25 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // 載入設定
-    let config = config::Config::load(&cli.config)?;
+    // Setup 不需要事先存在 config
+    if matches!(cli.command, Some(Commands::Setup)) {
+        return setup::run_setup_wizard(&cli.config).await;
+    }
+
+    // 載入設定（如果 config 不存在，引導使用者執行 setup）
+    let config = match config::Config::load(&cli.config) {
+        Ok(c) => c,
+        Err(e) => {
+            if !cli.config.exists() {
+                println!("❌ 找不到設定檔: {}", cli.config.display());
+                println!();
+                println!("首次使用請先執行初始設定：");
+                println!("  rtsp-recorder setup");
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
     tracing::info!("已載入設定檔: {:?}", cli.config);
 
     // 載入或建立統計
@@ -73,8 +96,9 @@ async fn main() -> Result<()> {
     // 執行命令
     match cli.command {
         Some(Commands::Record { duration, channels }) => {
+            let ff = ffmpeg::ensure_ffmpeg().await?;
             tracing::info!("手動錄製: {}s, 頻道 {}", duration, channels);
-            recorder::record_once(&config, duration, &channels).await?;
+            recorder::record_once(&config, duration, &channels, &ff).await?;
         }
         Some(Commands::Upload) => {
             tracing::info!("手動上傳");
@@ -91,16 +115,123 @@ async fn main() -> Result<()> {
         Some(Commands::InstallService) => {
             install_systemd_service(&cli.config)?;
         }
+        Some(Commands::Check) => {
+            check_environment(&config, &cli.config).await?;
+        }
+        Some(Commands::Setup) => unreachable!(), // 已在上方處理
         None => {
             if cli.daemon {
+                let ff = ffmpeg::ensure_ffmpeg().await?;
                 tracing::info!("啟動 daemon 模式");
-                recorder::run_daemon(&config, stats).await?;
+                recorder::run_daemon(&config, stats, &ff).await?;
             } else {
                 println!("使用 --help 查看說明");
             }
         }
     }
 
+    Ok(())
+}
+
+/// 檢查設定與環境
+async fn check_environment(config: &config::Config, config_path: &PathBuf) -> Result<()> {
+    println!("=== RTSP Recorder 環境檢查 ===");
+    println!();
+
+    // 1. 設定檔
+    println!("📄 設定檔: {:?}", config_path);
+    println!("   ✅ 格式正確，已成功載入");
+    println!();
+
+    // 2. RTSP
+    println!("📡 RTSP 設定:");
+    println!("   Base URL:  {}", config.rtsp.base_url);
+    println!("   頻道:      {:?}", config.rtsp.channels);
+    println!("   分段長度:  {}s ({}min)", config.rtsp.segment_duration, config.rtsp.segment_duration / 60);
+    println!();
+
+    // 3. 排程
+    println!("⏰ 錄製排程:");
+    if config.schedule.record_start_hour < config.schedule.record_end_hour {
+        println!("   {:02}:00 - {:02}:00", config.schedule.record_start_hour, config.schedule.record_end_hour);
+    } else {
+        println!("   {:02}:00 - 隔日 {:02}:00（跨日）", config.schedule.record_start_hour, config.schedule.record_end_hour);
+    }
+    println!();
+
+    // 4. 輸出目錄
+    println!("📂 輸出目錄: {:?}", config.output.dir);
+    if config.output.dir.exists() {
+        println!("   ✅ 目錄存在");
+    } else {
+        println!("   ⚠️  目錄不存在（啟動時會自動建立）");
+    }
+    println!();
+
+    // 5. GCS
+    println!("☁️  GCS 上傳:");
+    println!("   Bucket:     {}", config.gcs.bucket);
+    println!("   Prefix:     {}", if config.gcs.prefix.is_empty() { "(無)" } else { &config.gcs.prefix });
+    if config.gcs.credentials.exists() {
+        println!("   憑證:       ✅ {:?}", config.gcs.credentials);
+    } else {
+        println!("   憑證:       ❌ {:?} (找不到檔案)", config.gcs.credentials);
+    }
+    println!();
+
+    // 6. ffmpeg (自動偵測或下載)
+    println!("🎬 ffmpeg:");
+    match ffmpeg::ensure_ffmpeg().await {
+        Ok(paths) => {
+            if let Ok(output) = std::process::Command::new(&paths.ffmpeg).arg("-version").output() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                let first_line = version.lines().next().unwrap_or("unknown");
+                println!("   ffmpeg:  ✅ {}", first_line);
+            }
+            if let Ok(output) = std::process::Command::new(&paths.ffprobe).arg("-version").output() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                let first_line = version.lines().next().unwrap_or("unknown");
+                println!("   ffprobe: ✅ {}", first_line);
+            }
+            let display_path = if paths.ffmpeg.components().count() <= 1 {
+                "系統 PATH".to_string()
+            } else {
+                format!("{:?}", paths.ffmpeg.parent().unwrap_or(paths.ffmpeg.as_path()))
+            };
+            println!("   來源: {}", display_path);
+        }
+        Err(e) => {
+            println!("   ❌ ffmpeg 無法取得: {}", e);
+        }
+    }
+    println!();
+
+    // 8. 保留時間
+    println!("🗑️  檔案保留: {} 小時", config.retention.max_hours);
+    println!();
+
+    // 9. systemd 狀態 (Linux)
+    #[cfg(target_os = "linux")]
+    {
+        println!("🔧 systemd:");
+        match std::process::Command::new("systemctl")
+            .args(["is-active", "rtsp-recorder"])
+            .output()
+        {
+            Ok(output) => {
+                let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                match status.as_str() {
+                    "active" => println!("   ✅ 服務運行中"),
+                    "inactive" => println!("   ⚠️  服務已停止"),
+                    _ => println!("   ℹ️  狀態: {}", status),
+                }
+            }
+            Err(_) => println!("   ⚠️  未安裝為 systemd 服務"),
+        }
+        println!();
+    }
+
+    println!("=== 檢查完成 ===");
     Ok(())
 }
 
