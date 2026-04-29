@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+# 安裝 ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 複製 Python 檔案
+COPY python/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY python/rtsp_recorder.py .
+
+# 預設設定目錄
+VOLUME ["/app/config", "/app/videos"]
+
+# 設定環境變數讓 Python 不緩衝輸出
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "rtsp_recorder.py"]
+CMD ["--daemon"]

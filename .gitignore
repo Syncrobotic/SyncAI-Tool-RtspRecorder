@@ -1,0 +1,28 @@
+# 敏感檔案
+gcs-credentials.json
+config.yaml
+!gcs-credentials.example.json
+!config.example.yaml
+
+# 影片暫存
+videos/
+*.mp4
+*.mkv
+*.avi
+
+# 快取
+__pycache__/
+*.pyc
+
+# 日誌
+logs/
+*.log
+
+# Rust
+rust/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

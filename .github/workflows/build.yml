@@ -1,0 +1,147 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64
+            cross: false
+            
+          # Linux x64 (靜態連結，更通用)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux-x64-musl
+            cross: true
+            
+          # Linux ARM64 (AGX Thor / Jetson / 樹莓派4)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64
+            cross: true
+
+          # macOS Intel
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macos-x64
+            cross: false
+            
+          # macOS Apple Silicon (M1/M2/M3)
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-arm64
+            cross: false
+
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+            cross: false
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+      
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: Build (cross)
+        if: matrix.cross
+        working-directory: rust
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: Build (native)
+        if: "!matrix.cross && runner.os != 'Windows'"
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      # 打包 Unix
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd rust/target/${{ matrix.target }}/release
+          chmod +x rtsp-recorder
+          tar -czvf ../../../../rtsp-recorder-${{ matrix.name }}.tar.gz rtsp-recorder
+      
+      # 打包 Windows
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd rust/target/${{ matrix.target }}/release
+          Compress-Archive -Path rtsp-recorder.exe -DestinationPath ../../../../rtsp-recorder-${{ matrix.name }}.zip
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtsp-recorder-${{ matrix.name }}
+          path: |
+            rtsp-recorder-*.tar.gz
+            rtsp-recorder-*.zip
+          if-no-files-found: error
+
+  # 只在打 tag 時建立 Release
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} dist/ \;
+          ls -la dist/
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') }}

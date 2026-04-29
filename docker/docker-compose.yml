@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Python 版本
+  rtsp-recorder-python:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python
+    container_name: rtsp-recorder-python
+    restart: unless-stopped
+    volumes:
+      - ../python/config.yaml:/app/config.yaml:ro
+      - ../python/gcs-credentials.json:/app/gcs-credentials.json:ro
+      - ./videos:/app/videos
+    environment:
+      - TZ=Asia/Taipei
+
+  # Rust 版本
+  rtsp-recorder-rust:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rust
+    container_name: rtsp-recorder-rust
+    restart: unless-stopped
+    volumes:
+      - ../rust/config.yaml:/app/config/config.yaml:ro
+      - ../rust/gcs-credentials.json:/app/config/gcs-credentials.json:ro
+      - ./videos:/app/videos
+    environment:
+      - TZ=Asia/Taipei

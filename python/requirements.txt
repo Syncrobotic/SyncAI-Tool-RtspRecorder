@@ -1,0 +1,7 @@
+# RTSP Recorder 依賴套件
+
+# 設定檔解析（可選，沒有會用預設值）
+pyyaml>=6.0
+
+# GCS 上傳（daemon 模式必要）
+google-cloud-storage>=2.0

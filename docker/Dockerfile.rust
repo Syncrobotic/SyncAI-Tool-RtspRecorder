@@ -1,0 +1,38 @@
+FROM rust:1.75-slim as builder
+
+# 安裝編譯依賴
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 先複製 Cargo 檔案以利用快取
+COPY rust/Cargo.toml rust/Cargo.lock* ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release && rm -rf src target/release/rtsp-recorder*
+
+# 複製實際原始碼並編譯
+COPY rust/src ./src
+RUN cargo build --release
+
+# 運行時映像
+FROM debian:bookworm-slim
+
+# 安裝運行時依賴
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 從 builder 複製編譯好的執行檔
+COPY --from=builder /app/target/release/rtsp-recorder /usr/local/bin/
+
+# 預設設定目錄
+VOLUME ["/app/config", "/app/videos"]
+
+ENTRYPOINT ["rtsp-recorder"]
+CMD ["--config", "/app/config/config.yaml", "--daemon"]
