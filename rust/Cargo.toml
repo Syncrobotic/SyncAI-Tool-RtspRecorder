@@ -24,8 +24,8 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# GCS 上傳
-cloud-storage = "0.11"
+# GCS 上傳（使用 rustls 避免 OpenSSL 依賴）
+cloud-storage = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 
 # 錯誤處理
 anyhow = "1"
