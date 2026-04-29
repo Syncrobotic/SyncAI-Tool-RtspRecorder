@@ -6,9 +6,13 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:  # 手動觸發
 
 env:
   CARGO_TERM_COLOR: always
+
+# dev 分支只跑檢查，不編譯全部平台
+# main 分支或 tag 才編譯全部
 
 jobs:
   build:

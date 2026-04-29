@@ -1,0 +1,67 @@
+name: Check (Dev)
+
+# dev 分支快速檢查，不編譯全部平台
+on:
+  push:
+    branches: [dev, 'feature/*']
+  pull_request:
+    branches: [dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('rust/Cargo.lock') }}
+      
+      - name: Check format
+        working-directory: rust
+        run: cargo fmt --check
+      
+      - name: Clippy (lint)
+        working-directory: rust
+        run: cargo clippy -- -D warnings
+      
+      - name: Build (debug, 快速)
+        working-directory: rust
+        run: cargo build
+      
+      - name: Test
+        working-directory: rust
+        run: cargo test
+
+  python-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r python/requirements.txt
+          pip install flake8
+      
+      - name: Lint
+        run: flake8 python/ --max-line-length=120
