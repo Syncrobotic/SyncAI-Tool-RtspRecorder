@@ -36,9 +36,9 @@ enum Commands {
         #[arg(short, long, default_value = "600")]
         duration: u32,
 
-        /// 頻道範圍，例如 1-10
-        #[arg(short, long, default_value = "1-10")]
-        channels: String,
+        /// 串流名稱（逗號分隔，空白=全部）
+        #[arg(short, long, default_value = "")]
+        streams: String,
     },
     /// 手動上傳
     Upload,
@@ -95,10 +95,10 @@ async fn main() -> Result<()> {
 
     // 執行命令
     match cli.command {
-        Some(Commands::Record { duration, channels }) => {
+        Some(Commands::Record { duration, streams }) => {
             let ff = ffmpeg::ensure_ffmpeg().await?;
-            tracing::info!("手動錄製: {}s, 頻道 {}", duration, channels);
-            recorder::record_once(&config, duration, &channels, &ff).await?;
+            tracing::info!("手動錄製: {}s, 串流 {:?}", duration, streams);
+            recorder::record_once(&config, duration, &streams, &ff).await?;
         }
         Some(Commands::Upload) => {
             tracing::info!("手動上傳");
@@ -144,9 +144,14 @@ async fn check_environment(config: &config::Config, config_path: &PathBuf) -> Re
     println!();
 
     // 2. RTSP
-    println!("📡 RTSP 設定:");
-    println!("   Base URL:  {}", config.rtsp.base_url);
-    println!("   頻道:      {:?}", config.rtsp.channels);
+    println!("📡 RTSP 串流:");
+    if config.rtsp.streams.is_empty() {
+        println!("   ⚠️  尚未設定任何串流");
+    } else {
+        for (i, s) in config.rtsp.streams.iter().enumerate() {
+            println!("   [{}] {} → {}", i + 1, s.name, s.url);
+        }
+    }
     println!("   分段長度:  {}s ({}min)", config.rtsp.segment_duration, config.rtsp.segment_duration / 60);
     println!();
 

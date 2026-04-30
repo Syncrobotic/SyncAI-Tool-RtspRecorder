@@ -15,11 +15,17 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RtspConfig {
-    pub base_url: String,
-    #[serde(default = "default_channels")]
-    pub channels: Vec<u32>,
+    /// 串流清單（新格式）
+    #[serde(default)]
+    pub streams: Vec<StreamConfig>,
     #[serde(default = "default_segment_duration")]
     pub segment_duration: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamConfig {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,7 +78,6 @@ pub struct LogConfig {
 }
 
 // 預設值函數
-fn default_channels() -> Vec<u32> { (1..=10).collect() }
 fn default_segment_duration() -> u32 { 600 }
 fn default_start_hour() -> u32 { 8 }
 fn default_end_hour() -> u32 { 1 }

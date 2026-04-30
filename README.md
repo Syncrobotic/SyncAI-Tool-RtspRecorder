@@ -88,8 +88,8 @@ rtsp-recorder setup
 # 檢查環境（ffmpeg、設定檔、GCS 憑證）
 rtsp-recorder check
 
-# 手動錄製 60 秒，頻道 1-4
-rtsp-recorder record -d 60 -c 1-4
+# 手動錄製 60 秒，指定串流
+rtsp-recorder record -d 60 -s cam1,cam2
 
 # 手動上傳所有 MP4 到 GCS
 rtsp-recorder upload
@@ -113,9 +113,14 @@ sudo rtsp-recorder install-service
 ```yaml
 # ──────────────── RTSP 設定 ────────────────
 rtsp:
-  base_url: "rtsp://admin:password@192.168.1.100:554"
-  channels: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # 要錄製的頻道
-  segment_duration: 600                           # 每段錄製秒數（預設 600 = 10 分鐘）
+  streams:
+    - name: "cam1"                                    # 串流名稱（用於檔名）
+      url: "rtsp://admin:password@192.168.1.100:554/ch1"
+    - name: "cam2"
+      url: "rtsp://admin:password@192.168.1.100:554/ch2"
+    - name: "cam3"
+      url: "rtsp://10.8.60.55:8553/cam3"
+  segment_duration: 600                               # 每段錄製秒數（預設 600 = 10 分鐘）
 
 # ──────────────── 排程設定 ────────────────
 schedule:
@@ -153,8 +158,7 @@ log:
 
 | 區塊 | 欄位 | 說明 | 預設值 |
 |------|------|------|--------|
-| `rtsp` | `base_url` | RTSP 串流基底 URL | — (必填) |
-| | `channels` | 錄製頻道列表 | `[1..10]` |
+| `rtsp` | `streams` | 串流清單（name + url） | — (必填) |
 | | `segment_duration` | 每段秒數 | `600` |
 | `schedule` | `record_start_hour` | 開始時間 (0-23) | `8` |
 | | `record_end_hour` | 結束時間 (0-23) | `1` |

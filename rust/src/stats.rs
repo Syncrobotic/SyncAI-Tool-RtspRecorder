@@ -14,7 +14,7 @@ pub struct Stats {
     /// 錄製統計
     pub segments_created: u64,
     pub ffmpeg_restarts: u64,
-    pub ffmpeg_errors: HashMap<u32, Vec<FfmpegError>>,
+    pub ffmpeg_errors: HashMap<String, Vec<FfmpegError>>,
     
     /// 轉檔統計
     pub conversions_ok: u64,
@@ -71,9 +71,9 @@ impl Stats {
     }
 
     /// 記錄 ffmpeg 重啟
-    pub fn record_ffmpeg_restart(&mut self, channel: u32, reason: &str) {
+    pub fn record_ffmpeg_restart(&mut self, stream_name: &str, reason: &str) {
         self.ffmpeg_restarts += 1;
-        let errors = self.ffmpeg_errors.entry(channel).or_insert_with(Vec::new);
+        let errors = self.ffmpeg_errors.entry(stream_name.to_string()).or_insert_with(Vec::new);
         errors.push(FfmpegError {
             time: Local::now(),
             reason: reason.to_string(),

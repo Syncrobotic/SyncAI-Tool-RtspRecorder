@@ -106,14 +106,29 @@ fn generate_config(config_path: &Path) -> Result<()> {
     println!();
     println!("   --- 建立設定檔 ---");
 
-    // RTSP
-    let base_url = ask_with_default(
-        "   RTSP Base URL",
-        "rtsp://admin:password@192.168.1.100:554",
-    )?;
+    // RTSP 串流
+    println!();
+    println!("   📡 新增 RTSP 串流（輸入空白名稱結束）");
+    println!("   範例: name=test1, url=rtsp://10.8.60.55:8553/test1");
+    println!();
 
-    let channels_str = ask_with_default("   錄製頻道 (如: 1,2,3 或 1-10)", "1-10")?;
-    let channels = parse_channels(&channels_str);
+    let mut streams: Vec<(String, String)> = Vec::new();
+    loop {
+        let idx = streams.len() + 1;
+        let name = ask_with_default(&format!("   串流 {} 名稱", idx), "")?;
+        if name.is_empty() {
+            if streams.is_empty() {
+                println!("   ⚠️  至少需要一個串流");
+                continue;
+            }
+            break;
+        }
+        let url = ask_with_default(
+            &format!("   串流 {} URL", idx),
+            &format!("rtsp://admin:password@192.168.1.100:554/{}", name),
+        )?;
+        streams.push((name, url));
+    }
 
     let segment = ask_with_default("   分段長度 (秒)", "600")?;
     let segment_duration: u32 = segment.parse().unwrap_or(600);
@@ -139,14 +154,22 @@ fn generate_config(config_path: &Path) -> Result<()> {
     let retention = ask_with_default("   本地檔案保留時數", "6")?;
     let retention_h: u32 = retention.parse().unwrap_or(6);
 
+    // 產生串流 YAML
+    let mut streams_yaml = String::new();
+    for (name, url) in &streams {
+        streams_yaml.push_str(&format!(
+            "    - name: \"{}\"\n      url: \"{}\"\n",
+            name, url
+        ));
+    }
+
     // 產生 YAML
     let yaml = format!(
         r#"# RTSP Recorder 設定檔 — 由 setup 精靈自動產生
 
 rtsp:
-  base_url: "{base_url}"
-  channels: {channels}
-  segment_duration: {segment_duration}
+  streams:
+{streams_yaml}  segment_duration: {segment_duration}
 
 schedule:
   record_start_hour: {start_h}
@@ -173,8 +196,7 @@ log:
   retention_days: 30
   to_file: true
 "#,
-        base_url = base_url,
-        channels = format_channels_yaml(&channels),
+        streams_yaml = streams_yaml,
         segment_duration = segment_duration,
         start_h = start_h,
         end_h = end_h,
@@ -370,30 +392,4 @@ fn ask_yn(prompt: &str, default_yes: bool) -> Result<bool> {
     } else {
         Ok(input.starts_with('y'))
     }
-}
-
-/// 解析 "1-10" 或 "1,2,3,5" 格式
-fn parse_channels(s: &str) -> Vec<u32> {
-    let mut result = Vec::new();
-    for part in s.split(',') {
-        let part = part.trim();
-        if let Some((start, end)) = part.split_once('-') {
-            if let (Ok(s), Ok(e)) = (start.trim().parse::<u32>(), end.trim().parse::<u32>()) {
-                for ch in s..=e {
-                    result.push(ch);
-                }
-            }
-        } else if let Ok(n) = part.parse::<u32>() {
-            result.push(n);
-        }
-    }
-    if result.is_empty() {
-        result = (1..=10).collect();
-    }
-    result
-}
-
-fn format_channels_yaml(channels: &[u32]) -> String {
-    let nums: Vec<String> = channels.iter().map(|n| n.to_string()).collect();
-    format!("[{}]", nums.join(", "))
 }

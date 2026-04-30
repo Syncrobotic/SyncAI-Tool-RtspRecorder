@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::Config;
+use crate::config::{Config, StreamConfig};
 use crate::converter;
 use crate::ffmpeg::FfmpegPaths;
 use crate::stats::Stats;
@@ -63,20 +63,21 @@ fn build_ffmpeg_args(url: &str, output_pattern: &str, segment_duration: u32) -> 
     ]
 }
 
-/// 錄製單一頻道（支援斷線接續）
+/// 錄製單一串流（支援斷線接續）
 async fn record_channel(
     config: &Config,
-    channel: u32,
+    stream: &StreamConfig,
     stats: Arc<Mutex<Stats>>,
     mut shutdown: broadcast::Receiver<()>,
     ff: &FfmpegPaths,
 ) -> Result<()> {
-    let url = format!("{}/chID={}&streamType=main&linkType=tcp", config.rtsp.base_url, channel);
+    let url = &stream.url;
+    let stream_name = &stream.name;
     let output_dir = &config.output.dir;
     std::fs::create_dir_all(output_dir)?;
 
     let output_pattern = output_dir
-        .join(format!("ch{}_%Y%m%d_%H%M%S.mkv", channel))
+        .join(format!("{}_%Y%m%d_%H%M%S.mkv", stream_name))
         .to_string_lossy()
         .to_string();
 
@@ -89,21 +90,21 @@ async fn record_channel(
             let remaining = calc_seconds_to_next_boundary(segment_duration);
             if remaining < 30 {
                 // 剩餘時間太短，等待下一週期
-                tracing::info!("[CH{}] 剩餘 {}s 太短，等待下一週期", channel, remaining);
+                tracing::info!("[{}] 剩餘 {}s 太短，等待下一週期", stream_name, remaining);
                 tokio::time::sleep(tokio::time::Duration::from_secs(remaining as u64 + 1)).await;
                 is_resuming = false;
                 segment_duration
             } else {
-                tracing::info!("[CH{}] 接續剩餘 {}s", channel, remaining);
+                tracing::info!("[{}] 接續剩餘 {}s", stream_name, remaining);
                 remaining
             }
         } else {
             segment_duration
         };
 
-        let args = build_ffmpeg_args(&url, &output_pattern, current_duration);
+        let args = build_ffmpeg_args(url, &output_pattern, current_duration);
         
-        tracing::info!("[CH{}] 啟動錄製（每 {}s 分段）", channel, current_duration);
+        tracing::info!("[{}] 啟動錄製（每 {}s 分段）", stream_name, current_duration);
 
         let mut child = Command::new(&ff.ffmpeg)
             .args(&args)
@@ -117,22 +118,22 @@ async fn record_channel(
                 match status {
                     Ok(s) if !s.success() => {
                         let code = s.code().unwrap_or(-1);
-                        tracing::warn!("[CH{}] ffmpeg 退出 (code={})，3 秒後重啟", channel, code);
+                        tracing::warn!("[{}] ffmpeg 退出 (code={})，3 秒後重啟", stream_name, code);
                         
                         // 記錄重啟統計
                         {
                             let mut stats = stats.lock().await;
-                            stats.record_ffmpeg_restart(channel, &format!("exit_code={}", code));
+                            stats.record_ffmpeg_restart(stream_name, &format!("exit_code={}", code));
                         }
                         
                         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                         is_resuming = true;  // 下次啟動使用接續模式
                     }
                     Err(e) => {
-                        tracing::error!("[CH{}] ffmpeg 錯誤: {}，3 秒後重啟", channel, e);
+                        tracing::error!("[{}] ffmpeg 錯誤: {}，3 秒後重啟", stream_name, e);
                         {
                             let mut stats = stats.lock().await;
-                            stats.record_ffmpeg_restart(channel, &e.to_string());
+                            stats.record_ffmpeg_restart(stream_name, &e.to_string());
                         }
                         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                         is_resuming = true;
@@ -148,7 +149,7 @@ async fn record_channel(
                 }
             }
             _ = shutdown.recv() => {
-                tracing::info!("[CH{}] 收到停止訊號", channel);
+                tracing::info!("[{}] 收到停止訊號", stream_name);
                 child.kill().await?;
                 break;
             }
@@ -238,17 +239,18 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
             continue;
         }
 
-        tracing::info!("開始錄製 {} 個頻道", config.rtsp.channels.len());
+        tracing::info!("開始錄製 {} 個串流", config.rtsp.streams.len());
 
         let mut handles = vec![];
-        for &ch in &config.rtsp.channels {
+        for stream in &config.rtsp.streams {
             let config = config.clone();
+            let stream = stream.clone();
             let rx = shutdown_tx.subscribe();
             let channel_stats = stats.clone();
             let ch_ff = ff.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = record_channel(&config, ch, channel_stats, rx, &ch_ff).await {
-                    tracing::error!("[CH{}] 錯誤: {}", ch, e);
+                if let Err(e) = record_channel(&config, &stream, channel_stats, rx, &ch_ff).await {
+                    tracing::error!("[{}] 錯誤: {}", stream.name, e);
                 }
             }));
         }
