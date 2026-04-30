@@ -77,33 +77,37 @@ pub async fn upload_file(config: &Config, file_path: &Path, stats: Option<Arc<Mu
 
     tracing::info!("[上傳] {} -> gs://{}/{}", file_name, bucket, object_name);
 
-    // 使用 gsutil 命令
-    let status = tokio::process::Command::new("gsutil")
-        .args([
-            "-o", &format!("Credentials:gs_service_key_file={}", config.gcs.credentials.display()),
-            "cp",
-            file_path.to_str().unwrap(),
-            &format!("gs://{}/{}", bucket, object_name),
-        ])
-        .status()
-        .await?;
+    // 設定 GCS 憑證環境變數
+    std::env::set_var("SERVICE_ACCOUNT", config.gcs.credentials.to_str().unwrap_or(""));
 
-    if status.success() {
-        tracing::info!("[上傳] 完成: {}", file_name);
-        // 上傳成功後刪除本地檔案
-        std::fs::remove_file(file_path)?;
-        
-        if let Some(stats) = stats {
-            let mut s = stats.lock().await;
-            s.record_upload(true, file_size);
+    // 讀取檔案內容
+    let file_bytes = tokio::fs::read(file_path).await?;
+
+    // 使用 cloud-storage crate 上傳
+    let result = cloud_storage::Client::default()
+        .object()
+        .create(bucket, file_bytes, &object_name, "application/octet-stream")
+        .await;
+
+    match result {
+        Ok(_) => {
+            tracing::info!("[上傳] 完成: {}", file_name);
+            // 上傳成功後刪除本地檔案
+            std::fs::remove_file(file_path)?;
+            
+            if let Some(stats) = stats {
+                let mut s = stats.lock().await;
+                s.record_upload(true, file_size);
+            }
+            Ok(())
         }
-        Ok(())
-    } else {
-        if let Some(stats) = stats {
-            let mut s = stats.lock().await;
-            s.record_upload(false, 0);
+        Err(e) => {
+            if let Some(stats) = stats {
+                let mut s = stats.lock().await;
+                s.record_upload(false, 0);
+            }
+            anyhow::bail!("上傳失敗: {} - {}", file_name, e)
         }
-        anyhow::bail!("上傳失敗: {}", file_name)
     }
 }
 
