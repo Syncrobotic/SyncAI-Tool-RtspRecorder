@@ -33,18 +33,21 @@ async fn check_bandwidth(interface: &str, threshold_mbps: u32) -> bool {
     let path = format!("/sys/class/net/{}/statistics/rx_bytes", interface);
     
     // 讀取第一次
-    let bytes1: u64 = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
+    let bytes1: u64 = match std::fs::read_to_string(&path) {
+        Ok(s) => s.trim().parse().unwrap_or(0),
+        Err(e) => {
+            tracing::warn!("[網路] 無法讀取 {}: {}", path, e);
+            return true; // 讀取失敗時允許上傳
+        }
+    };
     
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     
     // 讀取第二次
-    let bytes2: u64 = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
+    let bytes2: u64 = match std::fs::read_to_string(&path) {
+        Ok(s) => s.trim().parse().unwrap_or(0),
+        Err(_) => return true,
+    };
     
     let bytes_per_sec = bytes2.saturating_sub(bytes1);
     let mbps = (bytes_per_sec * 8) as f64 / 1_000_000.0;
@@ -76,9 +79,6 @@ pub async fn upload_file(config: &Config, file_path: &Path, stats: Option<Arc<Mu
     let file_size = file_path.metadata().map(|m| m.len()).unwrap_or(0);
 
     tracing::info!("[上傳] {} -> gs://{}/{}", file_name, bucket, object_name);
-
-    // 設定 GCS 憑證環境變數
-    std::env::set_var("SERVICE_ACCOUNT", config.gcs.credentials.to_str().unwrap_or(""));
 
     // 讀取檔案內容
     let file_bytes = tokio::fs::read(file_path).await?;
@@ -129,20 +129,25 @@ pub async fn smart_upload(
                 }
 
                 // 掃描並上傳 MP4 檔案
-                if let Ok(entries) = std::fs::read_dir(&config.output.dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("mp4") {
-                            // 再次檢查網路
-                            if !is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await {
-                                tracing::debug!("[上傳] 網路變忙碌，暫停");
-                                break;
-                            }
-                            
-                            if let Err(e) = upload_file(config, &path, Some(stats.clone())).await {
-                                tracing::error!("[上傳] 失敗: {:?} - {}", path.file_name(), e);
+                match std::fs::read_dir(&config.output.dir) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().and_then(|e| e.to_str()) == Some("mp4") {
+                                // 再次檢查網路
+                                if !is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await {
+                                    tracing::debug!("[上傳] 網路變忙碌，暫停");
+                                    break;
+                                }
+                                
+                                if let Err(e) = upload_file(config, &path, Some(stats.clone())).await {
+                                    tracing::error!("[上傳] 失敗: {:?} - {}", path.file_name(), e);
+                                }
                             }
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!("[上傳] 無法掃描目錄: {}", e);
                     }
                 }
             }

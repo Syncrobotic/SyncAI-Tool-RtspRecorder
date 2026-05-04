@@ -243,8 +243,9 @@ nohup rtsp-recorder --daemon &
   │   ├─ H.265 → copy + hvc1 tag
   │   └─ MJPEG → re-encode to H.264
   │
-  └─ 智慧上傳到 GCS（網路閒置時）
-      └─ 上傳後依 retention.max_hours 清理
+  ├─ 智慧上傳到 GCS（網路閒置時）
+  │
+  └─ 自動清理舊檔（依 retention.max_hours）
 ```
 
 ---

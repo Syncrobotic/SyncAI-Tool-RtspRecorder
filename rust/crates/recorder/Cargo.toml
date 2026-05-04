@@ -1,0 +1,31 @@
+[package]
+name = "rtsp-recorder"
+version = "0.4.0"
+edition = "2021"
+description = "RTSP recorder with GCS upload support"
+authors = ["Daniel Chen"]
+
+[dependencies]
+rtsp-shared = { path = "../shared" }
+
+# CLI 參數解析
+clap = { version = "4", features = ["derive"] }
+
+# 非同步運行時
+tokio = { version = "1", features = ["full"] }
+
+# 設定檔解析
+serde_json = "1"
+
+# 時間處理
+chrono = "0.4"
+
+# 日誌
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 錯誤處理
+anyhow = "1"
+
+# 目錄路徑
+dirs = "5"

@@ -45,26 +45,24 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
     let is_hevc = matches!(codec.as_deref(), Some("hevc") | Some("h265"));
     let is_mjpeg = matches!(codec.as_deref(), Some("mjpeg") | Some("mjpg"));
 
-    // MJPEG 必須重編碼
-    if !is_mjpeg {
-        // 嘗試直接複製
-        let mut args = vec![
+    let mkv_str = mkv_path.to_str().ok_or_else(|| anyhow::anyhow!("路徑含無效 UTF-8: {:?}", mkv_path))?;
+    let mp4_str = mp4_path.to_str().ok_or_else(|| anyhow::anyhow!("路徑含無效 UTF-8: {:?}", mp4_path))?;
+
+    // H.264 可以直接複製；HEVC/MJPEG 需要重新編碼為 H.264 以確保播放相容性
+    if !is_mjpeg && !is_hevc {
+        // 嘗試直接複製（僅限 H.264 等通用編碼）
+        let args = vec![
             "-y",
             "-fflags", "+genpts+igndts+discardcorrupt",
-            "-i", mkv_path.to_str().unwrap(),
+            "-i", mkv_str,
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "128k",
             "-ar", "44100",
             "-movflags", "+faststart",
             "-avoid_negative_ts", "make_zero",
+            mp4_str,
         ];
-
-        if is_hevc {
-            args.extend(["-tag:v", "hvc1"]);
-        }
-
-        args.push(mp4_path.to_str().unwrap());
 
         let status = Command::new(&ff.ffmpeg)
             .args(&args)
@@ -86,7 +84,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
         .args([
             "-y",
             "-fflags", "+genpts+igndts+discardcorrupt",
-            "-i", mkv_path.to_str().unwrap(),
+            "-i", mkv_str,
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "20",
@@ -96,7 +94,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
             "-ar", "44100",
             "-movflags", "+faststart",
             "-avoid_negative_ts", "make_zero",
-            mp4_path.to_str().unwrap(),
+            mp4_str,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -108,5 +106,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
         return Ok(Some(mp4_path));
     }
 
+    // 清理失敗的殘留 MP4
+    let _ = std::fs::remove_file(&mp4_path);
     Ok(None)
 }

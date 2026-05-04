@@ -4,13 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-mod config;
-mod converter;
-mod ffmpeg;
+use rtsp_shared::{config, ffmpeg, stats, uploader};
+
 mod recorder;
 mod setup;
-mod stats;
-mod uploader;
 
 #[derive(Parser)]
 #[command(name = "rtsp-recorder")]
@@ -56,20 +53,25 @@ enum Commands {
     Check,
     /// 互動式初始設定
     Setup,
+    /// 解除安裝（清理服務、錄影、設定）
+    Uninstall,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // 初始化日誌
     tracing_subscriber::fmt()
-        .with_env_filter("rtsp_recorder=info")
+        .with_env_filter("rtsp_recorder=info,rtsp_shared=info")
         .init();
 
     let cli = Cli::parse();
 
-    // Setup 不需要事先存在 config
+    // Setup / Uninstall 不需要事先存在 config
     if matches!(cli.command, Some(Commands::Setup)) {
         return setup::run_setup_wizard(&cli.config).await;
+    }
+    if matches!(cli.command, Some(Commands::Uninstall)) {
+        return setup::run_uninstall(&cli.config).await;
     }
 
     // 載入設定（如果 config 不存在，引導使用者執行 setup）
@@ -87,6 +89,15 @@ async fn main() -> Result<()> {
         }
     };
     tracing::info!("已載入設定檔: {:?}", cli.config);
+
+    // P0: 設定 GCS 憑證環境變數（程式啟動時設定一次，避免多執行緒 data race）
+    if config.gcs.credentials.exists() {
+        let cred_path = config.gcs.credentials.to_string_lossy().to_string();
+        if cred_path.is_empty() {
+            anyhow::bail!("GCS 憑證路徑無效: {:?}", config.gcs.credentials);
+        }
+        std::env::set_var("SERVICE_ACCOUNT", &cred_path);
+    }
 
     // 載入或建立統計
     let stats = Arc::new(Mutex::new(
@@ -119,6 +130,7 @@ async fn main() -> Result<()> {
             check_environment(&config, &cli.config).await?;
         }
         Some(Commands::Setup) => unreachable!(), // 已在上方處理
+        Some(Commands::Uninstall) => unreachable!(), // 已在上方處理
         None => {
             if cli.daemon {
                 let ff = ffmpeg::ensure_ffmpeg().await?;
@@ -267,7 +279,7 @@ async fn cleanup_old_files(
             continue;
         }
 
-        if let Ok(metadata) = path.metadata() {
+        if let Ok(metadata) = entry.metadata() {
             if let Ok(modified) = metadata.modified() {
                 if modified < threshold {
                     if let Err(e) = std::fs::remove_file(&path) {

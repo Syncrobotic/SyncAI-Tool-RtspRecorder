@@ -1022,20 +1022,32 @@ dependencies = [
 
 [[package]]
 name = "rtsp-recorder"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
+ "rtsp-shared",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rtsp-shared"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
  "cloud-storage",
  "dirs",
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

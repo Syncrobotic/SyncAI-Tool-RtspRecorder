@@ -6,10 +6,11 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::{Config, StreamConfig};
-use crate::converter;
-use crate::ffmpeg::FfmpegPaths;
-use crate::stats::Stats;
+use rtsp_shared::config::{Config, StreamConfig};
+use rtsp_shared::converter;
+use rtsp_shared::ffmpeg::FfmpegPaths;
+use rtsp_shared::stats::Stats;
+use rtsp_shared::uploader;
 
 /// 檢查是否為錄製時間
 fn is_recording_time(config: &Config) -> bool {
@@ -27,6 +28,9 @@ fn is_recording_time(config: &Config) -> bool {
 
 /// 計算到下一個分段邊界的秒數
 fn calc_seconds_to_next_boundary(segment_duration: u32) -> u32 {
+    if segment_duration == 0 {
+        return 1;
+    }
     let now = Local::now();
     let seconds_since_midnight = now.num_seconds_from_midnight();
     let elapsed_in_segment = seconds_since_midnight % segment_duration;
@@ -85,6 +89,25 @@ async fn record_channel(
     let mut is_resuming = false;
 
     loop {
+        // P1: 檢查是否在錄製時段，不在則暫停
+        if !is_recording_time(config) {
+            tracing::info!("[{}] 目前不在錄製時段，暫停錄製", stream_name);
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                        if is_recording_time(config) {
+                            tracing::info!("[{}] 進入錄製時段，恢復錄製", stream_name);
+                            break;
+                        }
+                    }
+                    _ = shutdown.recv() => {
+                        tracing::info!("[{}] 收到停止訊號", stream_name);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // 計算使用的 segment duration（斷線接續時使用剩餘時間）
         let current_duration = if is_resuming {
             let remaining = calc_seconds_to_next_boundary(segment_duration);
@@ -92,7 +115,6 @@ async fn record_channel(
                 // 剩餘時間太短，等待下一週期
                 tracing::info!("[{}] 剩餘 {}s 太短，等待下一週期", stream_name, remaining);
                 tokio::time::sleep(tokio::time::Duration::from_secs(remaining as u64 + 1)).await;
-                is_resuming = false;
                 segment_duration
             } else {
                 tracing::info!("[{}] 接續剩餘 {}s", stream_name, remaining);
@@ -110,7 +132,7 @@ async fn record_channel(
             .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .spawn()?;
 
         tokio::select! {
@@ -224,6 +246,34 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
     let converter_ff = ff.clone();
     tokio::spawn(async move {
         background_converter(output_dir, converter_stats, converter_shutdown, converter_ff).await;
+        tracing::error!("[轉檔] 背景任務意外結束");
+    });
+
+    // P0: 啟動智慧上傳（網路閒置時自動上傳）
+    let upload_config = config.clone();
+    let upload_stats = stats.clone();
+    let upload_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        uploader::smart_upload(&upload_config, upload_stats, upload_shutdown).await;
+        tracing::error!("[上傳] 背景任務意外結束");
+    });
+
+    // 啟動自動清理（每小時檢查一次）
+    let cleanup_config = config.clone();
+    let cleanup_stats = stats.clone();
+    let cleanup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        background_cleanup(cleanup_config, cleanup_stats, cleanup_shutdown).await;
+        tracing::error!("[清理] 背景任務意外結束");
+    });
+
+    // P1: 啟動定期保存統計
+    let save_stats = stats.clone();
+    let save_dir = config.output.dir.clone();
+    let save_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        background_stats_saver(save_stats, save_dir, save_shutdown).await;
+        tracing::error!("[統計] 背景任務意外結束");
     });
 
     // 記錄啟動
@@ -232,36 +282,9 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
         s.start();
     }
 
-    loop {
-        if !is_recording_time(config) {
-            tracing::info!("目前不在錄製時間，等待中...");
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-            continue;
-        }
-
-        tracing::info!("開始錄製 {} 個串流", config.rtsp.streams.len());
-
-        let mut handles = vec![];
-        for stream in &config.rtsp.streams {
-            let config = config.clone();
-            let stream = stream.clone();
-            let rx = shutdown_tx.subscribe();
-            let channel_stats = stats.clone();
-            let ch_ff = ff.clone();
-            handles.push(tokio::spawn(async move {
-                if let Err(e) = record_channel(&config, &stream, channel_stats, rx, &ch_ff).await {
-                    tracing::error!("[{}] 錯誤: {}", stream.name, e);
-                }
-            }));
-        }
-
-        // 等待所有錄製任務完成
-        for handle in handles {
-            handle.await?;
-        }
-
-        break;
-    }
+    // 主錄製迴圈
+    let main_shutdown = shutdown_tx.subscribe();
+    run_recording_loop(config, stats.clone(), ff, main_shutdown).await?;
 
     // 保存統計
     {
@@ -274,9 +297,217 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
     Ok(())
 }
 
+/// 主錄製迴圈（在錄製時段啟動所有串流）
+async fn run_recording_loop(
+    config: &Config,
+    stats: Arc<Mutex<Stats>>,
+    ff: &FfmpegPaths,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<()> {
+    loop {
+        if !is_recording_time(config) {
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(60)) => {
+                    tracing::info!("目前不在錄製時間，等待中...");
+                    continue;
+                }
+                _ = shutdown.recv() => {
+                    tracing::info!("收到停止訊號，結束主迴圈");
+                    return Ok(());
+                }
+            }
+        }
+
+        tracing::info!("開始錄製 {} 個串流", config.rtsp.streams.len());
+
+        // 為每個串流建立一個新的 broadcast channel 來管理子任務
+        let (stream_shutdown_tx, _) = broadcast::channel::<()>(16);
+
+        let mut handles = vec![];
+        for stream in &config.rtsp.streams {
+            let config = config.clone();
+            let stream = stream.clone();
+            let rx = stream_shutdown_tx.subscribe();
+            let channel_stats = stats.clone();
+            let ch_ff = ff.clone();
+            handles.push(tokio::spawn(async move {
+                if let Err(e) = record_channel(&config, &stream, channel_stats, rx, &ch_ff).await {
+                    tracing::error!("[{}] 錯誤: {}", stream.name, e);
+                }
+            }));
+        }
+
+        // 等待 shutdown 或所有錄製完成
+        let all_done = async {
+            for handle in handles {
+                let _ = handle.await;
+            }
+        };
+        tokio::pin!(all_done);
+
+        tokio::select! {
+            _ = shutdown.recv() => {
+                tracing::info!("收到停止訊號，停止所有串流");
+                let _ = stream_shutdown_tx.send(());
+                return Ok(());
+            }
+            _ = &mut all_done => {
+                // 所有串流都結束了（不太可能除非全部出錯），重新啟動
+                tracing::warn!("所有串流意外結束，5 秒後重新啟動");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+/// 背景自動清理任務
+async fn background_cleanup(
+    config: Config,
+    stats: Arc<Mutex<Stats>>,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    // 每小時檢查一次
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
+    
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let threshold = std::time::SystemTime::now()
+                    - std::time::Duration::from_secs(config.retention.max_hours as u64 * 3600);
+                let mut deleted = 0u64;
+
+                if let Ok(entries) = std::fs::read_dir(&config.output.dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if !["mp4", "mkv"].contains(&ext) {
+                            continue;
+                        }
+                        if let Ok(meta) = path.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if modified < threshold {
+                                    if std::fs::remove_file(&path).is_ok() {
+                                        tracing::info!("[清理] 已刪除: {:?}", path.file_name());
+                                        deleted += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if deleted > 0 {
+                    let mut s = stats.lock().await;
+                    s.record_cleanup(deleted);
+                    tracing::info!("[清理] 本次刪除 {} 個舊檔案", deleted);
+                }
+            }
+            _ = shutdown.recv() => {
+                tracing::info!("[清理] 停止自動清理");
+                break;
+            }
+        }
+    }
+}
+
+/// P1: 定期保存統計（每 5 分鐘）
+async fn background_stats_saver(
+    stats: Arc<Mutex<Stats>>,
+    output_dir: PathBuf,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+    
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let s = stats.lock().await;
+                if let Err(e) = s.save(&output_dir) {
+                    tracing::error!("[統計] 保存失敗: {}", e);
+                }
+            }
+            _ = shutdown.recv() => {
+                // 結束前最後保存一次
+                let s = stats.lock().await;
+                let _ = s.save(&output_dir);
+                break;
+            }
+        }
+    }
+}
+
 /// 手動錄製一次
-pub async fn record_once(config: &Config, duration: u32, channels: &str, _ff: &FfmpegPaths) -> Result<()> {
-    tracing::info!("手動錄製 {}s, 頻道: {}", duration, channels);
-    // TODO: 解析頻道範圍並錄製
+pub async fn record_once(config: &Config, duration: u32, streams_filter: &str, ff: &FfmpegPaths) -> Result<()> {
+    let streams: Vec<&StreamConfig> = if streams_filter.is_empty() {
+        // 空字串 = 全部串流
+        config.rtsp.streams.iter().collect()
+    } else {
+        // 依名稱篩選
+        let names: Vec<&str> = streams_filter.split(',').map(|s| s.trim()).collect();
+        config.rtsp.streams.iter()
+            .filter(|s| names.contains(&s.name.as_str()))
+            .collect()
+    };
+
+    if streams.is_empty() {
+        println!("❌ 找不到符合的串流。可用串流:");
+        for s in &config.rtsp.streams {
+            println!("   - {}", s.name);
+        }
+        return Ok(());
+    }
+
+    tracing::info!("手動錄製 {}s, {} 個串流", duration, streams.len());
+
+    let output_dir = &config.output.dir;
+    std::fs::create_dir_all(output_dir)?;
+
+    let mut handles = vec![];
+    for stream in streams {
+        let url = stream.url.clone();
+        let name = stream.name.clone();
+        let output_file = output_dir
+            .join(format!("{}_{}.mkv", name, Local::now().format("%Y%m%d_%H%M%S")))
+            .to_string_lossy()
+            .to_string();
+        let ff = ff.clone();
+        let dur = duration;
+
+        handles.push(tokio::spawn(async move {
+            tracing::info!("[{}] 開始錄製 {}s → {}", name, dur, output_file);
+
+            let status = Command::new(&ff.ffmpeg)
+                .args([
+                    "-y",
+                    "-fflags", "+genpts+discardcorrupt+nobuffer+igndts",
+                    "-rtsp_transport", "tcp",
+                    "-rtsp_flags", "prefer_tcp",
+                    "-use_wallclock_as_timestamps", "1",
+                    "-timeout", "10000000",
+                    "-i", &url,
+                    "-t", &dur.to_string(),
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-map", "0",
+                    &output_file,
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+
+            match status {
+                Ok(s) if s.success() => tracing::info!("[{}] 錄製完成: {}", name, output_file),
+                Ok(s) => tracing::error!("[{}] ffmpeg 退出 code={}", name, s.code().unwrap_or(-1)),
+                Err(e) => tracing::error!("[{}] ffmpeg 錯誤: {}", name, e),
+            }
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    tracing::info!("手動錄製完成");
     Ok(())
 }

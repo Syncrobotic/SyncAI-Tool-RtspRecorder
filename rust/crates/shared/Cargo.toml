@@ -1,0 +1,30 @@
+[package]
+name = "rtsp-shared"
+version = "0.4.0"
+edition = "2021"
+description = "Shared library for RTSP recorder toolkit"
+authors = ["Daniel Chen"]
+
+[dependencies]
+# 非同步運行時
+tokio = { version = "1", features = ["full"] }
+
+# 設定檔解析
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+
+# 時間處理
+chrono = { version = "0.4", features = ["serde"] }
+
+# 日誌
+tracing = "0.1"
+
+# GCS 上傳（使用 rustls 避免 OpenSSL 依賴）
+cloud-storage = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+
+# 錯誤處理
+anyhow = "1"
+
+# 目錄路徑
+dirs = "5"

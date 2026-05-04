@@ -150,10 +150,12 @@ async fn download_ffmpeg() -> Result<FfmpegPaths> {
 
     // 解壓
     println!("📦 解壓縮...");
-    extract_ffmpeg(&archive_path, archive_type, &tmp_dir, &dest_dir)?;
+    let extract_result = extract_ffmpeg(&archive_path, archive_type, &tmp_dir, &dest_dir);
 
-    // 清理
+    // 無論成功失敗都清理暫存目錄
     let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    extract_result?;
 
     // 驗證
     let paths = find_local_ffmpeg().context("下載後找不到 ffmpeg 二進制檔")?;
