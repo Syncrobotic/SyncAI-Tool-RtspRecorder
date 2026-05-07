@@ -80,6 +80,13 @@ async fn record_channel(
     let output_dir = &config.output.dir;
     std::fs::create_dir_all(output_dir)?;
 
+    // 確保輸出目錄和檔案對所有使用者可讀（解決 root 錄製 + 一般使用者上傳的權限問題）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(output_dir, std::fs::Permissions::from_mode(0o755));
+    }
+
     let output_pattern = output_dir
         .join(format!("{}_%Y%m%d_%H%M%S.mkv", stream_name))
         .to_string_lossy()
@@ -187,6 +194,7 @@ async fn background_converter(
     stats: Arc<Mutex<Stats>>,
     mut shutdown: broadcast::Receiver<()>,
     ff: FfmpegPaths,
+    resolution: String,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     
@@ -198,11 +206,17 @@ async fn background_converter(
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.extension().and_then(|e| e.to_str()) == Some("mkv") {
+                            // 確保 MKV 檔案可被其他使用者讀取
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+                            }
                             // 檢查檔案是否正在寫入（修改時間 > 10 秒前）
                             if let Ok(metadata) = path.metadata() {
                                 if let Ok(modified) = metadata.modified() {
                                     if modified.elapsed().map(|d| d.as_secs() > 10).unwrap_or(false) {
-                                        match converter::convert_to_mp4(&path, &ff).await {
+                                        match converter::convert_to_mp4(&path, &ff, &resolution).await {
                                             Ok(Some(_)) => {
                                                 let mut stats = stats.lock().await;
                                                 stats.record_conversion(true);
@@ -244,8 +258,9 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
     let converter_shutdown = shutdown_tx.subscribe();
     let output_dir = config.output.dir.clone();
     let converter_ff = ff.clone();
+    let converter_resolution = config.output.resolution.clone();
     tokio::spawn(async move {
-        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff).await;
+        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff, converter_resolution).await;
         tracing::error!("[轉檔] 背景任務意外結束");
     });
 

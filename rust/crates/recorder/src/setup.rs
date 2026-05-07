@@ -146,9 +146,12 @@ fn generate_config(config_path: &Path) -> Result<()> {
     let output_dir = ask_with_default("   輸出目錄", &default_dir)?;
 
     // GCS
-    let bucket = ask_with_default("   GCS Bucket 名稱", "my-rtsp-recordings")?;
+    let bucket = ask_with_default("   GCS Bucket 名稱", "recording")?;
     let prefix = ask_with_default("   GCS 前綴 (可留空)", "")?;
     let cred_path = ask_with_default("   GCS 憑證路徑", "gcs-credentials.json")?;
+
+    // 輸出解析度
+    let resolution = ask_with_default("   輸出解析度 (1920x1080/1280x720/original)", "1920x1080")?;
 
     // 保留
     let retention = ask_with_default("   本地檔案保留時數", "6")?;
@@ -177,6 +180,7 @@ schedule:
 
 output:
   dir: "{output_dir}"
+  resolution: "{resolution}"
 
 gcs:
   bucket: "{bucket}"
@@ -201,6 +205,7 @@ log:
         start_h = start_h,
         end_h = end_h,
         output_dir = output_dir,
+        resolution = resolution,
         bucket = bucket,
         prefix = prefix,
         cred_path = cred_path,

@@ -134,6 +134,11 @@ async fn main() -> Result<()> {
         None => {
             if cli.daemon {
                 let ff = ffmpeg::ensure_ffmpeg().await?;
+                // 啟動前驗證 GCS bucket
+                if let Err(e) = uploader::verify_bucket(&config.gcs.bucket).await {
+                    tracing::warn!("{}", e);
+                    tracing::warn!("GCS 上傳功能可能無法使用，但錄製仍會繼續");
+                }
                 tracing::info!("啟動 daemon 模式");
                 recorder::run_daemon(&config, stats, &ff).await?;
             } else {
@@ -183,6 +188,7 @@ async fn check_environment(config: &config::Config, config_path: &PathBuf) -> Re
     } else {
         println!("   ⚠️  目錄不存在（啟動時會自動建立）");
     }
+    println!("   解析度:    {}", if config.output.resolution.is_empty() || config.output.resolution == "original" { "原始大小" } else { &config.output.resolution });
     println!();
 
     // 5. GCS

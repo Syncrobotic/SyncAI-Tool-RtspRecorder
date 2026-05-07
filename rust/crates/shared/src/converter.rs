@@ -30,7 +30,8 @@ pub async fn detect_video_codec(file_path: &Path, ff: &FfmpegPaths) -> Option<St
 }
 
 /// 轉檔 MKV -> MP4
-pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<std::path::PathBuf>> {
+/// resolution: 例如 "1920x1080"，空字串或 "original" 表示不縮放
+pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str) -> Result<Option<std::path::PathBuf>> {
     if !mkv_path.exists() {
         return Ok(None);
     }
@@ -72,6 +73,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
             .await?;
 
         if status.success() && mp4_path.exists() && mp4_path.metadata()?.len() > 1000 {
+            fix_file_permissions(&mp4_path);
             std::fs::remove_file(mkv_path)?;
             return Ok(Some(mp4_path));
         }
@@ -80,28 +82,47 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
     }
 
     // 重新編碼為 H.264
+    let need_scale = !resolution.is_empty() && resolution != "original";
+    let scale_filter = if need_scale {
+        // 解析 "1920x1080" → "scale=1920:1080"
+        let dims = resolution.replace('x', ":");
+        format!("scale={}", dims)
+    } else {
+        String::new()
+    };
+
+    let mut args = vec![
+        "-y".to_string(),
+        "-fflags".to_string(), "+genpts+igndts+discardcorrupt".to_string(),
+        "-i".to_string(), mkv_str.to_string(),
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "veryfast".to_string(),
+        "-crf".to_string(), "20".to_string(),
+        "-pix_fmt".to_string(), "yuv420p".to_string(),
+    ];
+
+    if need_scale {
+        args.extend(["-vf".to_string(), scale_filter]);
+    }
+
+    args.extend([
+        "-c:a".to_string(), "aac".to_string(),
+        "-b:a".to_string(), "128k".to_string(),
+        "-ar".to_string(), "44100".to_string(),
+        "-movflags".to_string(), "+faststart".to_string(),
+        "-avoid_negative_ts".to_string(), "make_zero".to_string(),
+        mp4_str.to_string(),
+    ]);
+
     let status = Command::new(&ff.ffmpeg)
-        .args([
-            "-y",
-            "-fflags", "+genpts+igndts+discardcorrupt",
-            "-i", mkv_str,
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ar", "44100",
-            "-movflags", "+faststart",
-            "-avoid_negative_ts", "make_zero",
-            mp4_str,
-        ])
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .await?;
 
     if status.success() && mp4_path.exists() && mp4_path.metadata()?.len() > 1000 {
+        fix_file_permissions(&mp4_path);
         std::fs::remove_file(mkv_path)?;
         return Ok(Some(mp4_path));
     }
@@ -110,3 +131,13 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths) -> Result<Option<
     let _ = std::fs::remove_file(&mp4_path);
     Ok(None)
 }
+
+/// 設定檔案權限為 0644（解決 root 錄製 + 一般使用者上傳的問題）
+#[cfg(unix)]
+fn fix_file_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+}
+
+#[cfg(not(unix))]
+fn fix_file_permissions(_path: &Path) {}

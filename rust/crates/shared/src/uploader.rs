@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Local;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -61,6 +62,18 @@ async fn is_network_idle(_interface: &str, _threshold_mbps: u32) -> bool {
     true
 }
 
+/// 驗證 GCS bucket 是否可存取
+pub async fn verify_bucket(bucket: &str) -> Result<()> {
+    tracing::info!("[GCS] 驗證 bucket: {}", bucket);
+    cloud_storage::Client::default()
+        .bucket()
+        .read(bucket)
+        .await
+        .map_err(|e| anyhow::anyhow!("GCS bucket '{}' 無法存取: {}", bucket, e))?;
+    tracing::info!("[GCS] ✅ bucket '{}' 驗證成功", bucket);
+    Ok(())
+}
+
 /// 上傳單一檔案到 GCS
 pub async fn upload_file(config: &Config, file_path: &Path, stats: Option<Arc<Mutex<Stats>>>) -> Result<()> {
     let bucket = &config.gcs.bucket;
@@ -70,10 +83,12 @@ pub async fn upload_file(config: &Config, file_path: &Path, stats: Option<Arc<Mu
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
+    // 按日期建立子資料夾: prefix/2026-05-07/filename.mp4
+    let date_folder = Local::now().format("%Y-%m-%d").to_string();
     let object_name = if prefix.is_empty() {
-        file_name.to_string()
+        format!("{}/{}", date_folder, file_name)
     } else {
-        format!("{}/{}", prefix, file_name)
+        format!("{}/{}/{}", prefix, date_folder, file_name)
     };
 
     let file_size = file_path.metadata().map(|m| m.len()).unwrap_or(0);

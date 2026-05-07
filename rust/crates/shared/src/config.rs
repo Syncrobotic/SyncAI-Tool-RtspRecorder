@@ -40,6 +40,9 @@ pub struct ScheduleConfig {
 pub struct OutputConfig {
     #[serde(default = "default_output_dir")]
     pub dir: PathBuf,
+    /// 輸出解析度，例如 "1920x1080"。留空或 "original" 表示不縮放
+    #[serde(default = "default_resolution")]
+    pub resolution: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +90,7 @@ fn default_output_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rtsp-recorder/videos")
 }
+fn default_resolution() -> String { "1920x1080".to_string() }
 fn default_credentials() -> PathBuf { PathBuf::from("gcs-credentials.json") }
 fn default_interface() -> String { "auto".to_string() }
 fn default_threshold() -> u32 { 8 }
