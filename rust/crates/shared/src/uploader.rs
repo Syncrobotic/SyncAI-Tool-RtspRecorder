@@ -83,12 +83,14 @@ pub async fn upload_file(config: &Config, file_path: &Path, stats: Option<Arc<Mu
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // 按日期建立子資料夾: prefix/2026-05-07/filename.mp4
-    let date_folder = Local::now().format("%Y-%m-%d").to_string();
+    // 按 channel/年/月/日 建立子資料夾: prefix/channel/YYYY/MM/DD/filename.mp4
+    let channel = file_name.split('_').next().unwrap_or("unknown");
+    let now = Local::now();
+    let date_path = now.format("%Y/%m/%d").to_string();
     let object_name = if prefix.is_empty() {
-        format!("{}/{}", date_folder, file_name)
+        format!("{}/{}/{}", channel, date_path, file_name)
     } else {
-        format!("{}/{}/{}", prefix, date_folder, file_name)
+        format!("{}/{}/{}/{}", prefix, channel, date_path, file_name)
     };
 
     let file_size = file_path.metadata().map(|m| m.len()).unwrap_or(0);

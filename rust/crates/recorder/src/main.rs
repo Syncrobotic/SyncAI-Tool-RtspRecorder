@@ -264,6 +264,7 @@ async fn cleanup_old_files(
     hours: u32,
     stats: Arc<Mutex<stats::Stats>>,
 ) -> Result<()> {
+    use std::io::{self, BufRead, Write};
     use std::time::{Duration, SystemTime};
 
     let output_dir = &config.output.dir;
@@ -273,13 +274,13 @@ async fn cleanup_old_files(
     }
 
     let threshold = SystemTime::now() - Duration::from_secs(hours as u64 * 3600);
-    let mut deleted = 0;
 
+    // 先掃描要刪除的檔案
+    let mut to_delete: Vec<std::path::PathBuf> = Vec::new();
     for entry in std::fs::read_dir(output_dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        // 只處理影片檔案
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !["mp4", "mkv"].contains(&ext) {
             continue;
@@ -288,14 +289,48 @@ async fn cleanup_old_files(
         if let Ok(metadata) = entry.metadata() {
             if let Ok(modified) = metadata.modified() {
                 if modified < threshold {
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        tracing::error!("刪除失敗: {:?} - {}", path.file_name(), e);
-                    } else {
-                        tracing::info!("已刪除: {:?}", path.file_name());
-                        deleted += 1;
-                    }
+                    to_delete.push(path);
                 }
             }
+        }
+    }
+
+    if to_delete.is_empty() {
+        println!("沒有超過 {} 小時的舊檔案", hours);
+        return Ok(());
+    }
+
+    // 列出並提醒
+    println!("⚠️  以下 {} 個檔案將被刪除（超過 {} 小時）：", to_delete.len(), hours);
+    println!();
+    for (i, path) in to_delete.iter().enumerate() {
+        if i < 10 {
+            println!("   {:?}", path.file_name().unwrap_or_default());
+        } else if i == 10 {
+            println!("   ... 還有 {} 個", to_delete.len() - 10);
+            break;
+        }
+    }
+    println!();
+    println!("⚠️  請確認這些檔案已上傳到 GCS，刪除後無法復原！");
+    print!("確定要刪除嗎？[y/N]: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input)?;
+    if !input.trim().to_lowercase().starts_with('y') {
+        println!("已取消");
+        return Ok(());
+    }
+
+    // 執行刪除
+    let mut deleted = 0;
+    for path in &to_delete {
+        if let Err(e) = std::fs::remove_file(path) {
+            tracing::error!("刪除失敗: {:?} - {}", path.file_name(), e);
+        } else {
+            tracing::info!("已刪除: {:?}", path.file_name());
+            deleted += 1;
         }
     }
 
@@ -305,7 +340,7 @@ async fn cleanup_old_files(
         s.save(output_dir)?;
     }
 
-    println!("清理完成: 刪除 {} 個檔案（保留 {} 小時內）", deleted, hours);
+    println!("清理完成: 刪除 {} 個檔案", deleted);
     Ok(())
 }
 
