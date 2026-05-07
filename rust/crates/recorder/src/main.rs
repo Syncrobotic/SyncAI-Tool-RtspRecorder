@@ -91,12 +91,19 @@ async fn main() -> Result<()> {
     tracing::info!("已載入設定檔: {:?}", cli.config);
 
     // P0: 設定 GCS 憑證環境變數（程式啟動時設定一次，避免多執行緒 data race）
+    // cloud-storage crate 的 SERVICE_ACCOUNT 需要 JSON 內容（不是檔案路徑）
     if config.gcs.credentials.exists() {
-        let cred_path = config.gcs.credentials.to_string_lossy().to_string();
-        if cred_path.is_empty() {
-            anyhow::bail!("GCS 憑證路徑無效: {:?}", config.gcs.credentials);
+        match std::fs::read_to_string(&config.gcs.credentials) {
+            Ok(content) => {
+                std::env::set_var("SERVICE_ACCOUNT", &content);
+                tracing::info!("已載入 GCS 憑證: {:?}", config.gcs.credentials);
+            }
+            Err(e) => {
+                tracing::error!("無法讀取 GCS 憑證檔案 {:?}: {}", config.gcs.credentials, e);
+            }
         }
-        std::env::set_var("SERVICE_ACCOUNT", &cred_path);
+    } else {
+        tracing::warn!("GCS 憑證檔案不存在: {:?}", config.gcs.credentials);
     }
 
     // 載入或建立統計
