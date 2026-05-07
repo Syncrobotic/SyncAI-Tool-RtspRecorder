@@ -246,7 +246,20 @@ fn setup_linux_service(config_path: &Path) -> Result<()> {
     let exe_path = std::env::current_exe()?;
     let config_abs = std::fs::canonicalize(config_path)
         .unwrap_or_else(|_| config_path.to_path_buf());
-    let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+    
+    // 使用 SUDO_USER 取得原本的使用者，避免 sudo 執行時變成 root
+    let user = std::env::var("SUDO_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "root".to_string());
+
+    // 讀取 config 取得 GCS credentials 路徑
+    let gcs_credentials = if let Ok(config) = rtsp_shared::config::Config::load(config_path) {
+        std::fs::canonicalize(&config.gcs.credentials)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| config.gcs.credentials.display().to_string())
+    } else {
+        "gcs-credentials.json".to_string()
+    };
 
     let service = format!(
         r#"[Unit]
@@ -256,6 +269,7 @@ After=network.target
 [Service]
 Type=simple
 User={user}
+Environment="GOOGLE_APPLICATION_CREDENTIALS={gcs_credentials}"
 ExecStart="{exe}" --config "{config}" --daemon
 Restart=always
 RestartSec=10
@@ -266,6 +280,7 @@ StandardError=journal
 WantedBy=multi-user.target
 "#,
         user = user,
+        gcs_credentials = gcs_credentials,
         exe = exe_path.display(),
         config = config_abs.display(),
     );

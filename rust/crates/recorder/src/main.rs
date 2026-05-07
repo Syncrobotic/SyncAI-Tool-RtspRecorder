@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
             cleanup_old_files(&config, h, stats.clone()).await?;
         }
         Some(Commands::InstallService) => {
-            install_systemd_service(&cli.config)?;
+            install_systemd_service(&cli.config, &config)?;
         }
         Some(Commands::Check) => {
             check_environment(&config, &cli.config).await?;
@@ -345,12 +345,21 @@ async fn cleanup_old_files(
 }
 
 /// 安裝 systemd 服務
-fn install_systemd_service(config_path: &PathBuf) -> Result<()> {
+fn install_systemd_service(config_path: &PathBuf, config: &config::Config) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let exe_path = std::env::current_exe()?;
         let config_abs = std::fs::canonicalize(config_path)?;
-        let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+        
+        // 使用 SUDO_USER 取得原本的使用者，避免 sudo 執行時變成 root
+        let user = std::env::var("SUDO_USER")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "root".to_string());
+
+        // 取得 GCS 認證檔案的絕對路徑
+        let gcs_credentials = std::fs::canonicalize(&config.gcs.credentials)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| config.gcs.credentials.display().to_string());
 
         let service_content = format!(
             r#"[Unit]
@@ -360,6 +369,7 @@ After=network.target
 [Service]
 Type=simple
 User={user}
+Environment="GOOGLE_APPLICATION_CREDENTIALS={gcs_credentials}"
 ExecStart={exe} --config {config} --daemon
 Restart=always
 RestartSec=10
@@ -370,6 +380,7 @@ StandardError=journal
 WantedBy=multi-user.target
 "#,
             user = user,
+            gcs_credentials = gcs_credentials,
             exe = exe_path.display(),
             config = config_abs.display(),
         );
@@ -410,6 +421,7 @@ WantedBy=multi-user.target
 
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = config;
         println!("systemd 服務僅支援 Linux 系統");
         println!();
         println!("macOS 建議使用 launchd，或直接執行:");
