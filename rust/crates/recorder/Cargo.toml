@@ -19,10 +19,11 @@ serde_json = "1"
 
 # 時間處理
 chrono = "0.4"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 
 # 日誌
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
 tracing-appender = "0.2"
 
 # 錯誤處理

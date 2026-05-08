@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -439,9 +440,20 @@ WantedBy=multi-user.target
     Ok(())
 }
 
+/// 取得本地時間 offset（預設 UTC+8）
+fn get_local_time_offset() -> time::UtcOffset {
+    // 嘗試取得系統本地時間 offset，失敗時預設 UTC+8
+    time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::from_hms(8, 0, 0).unwrap())
+}
+
 /// 初始化 console 日誌（用於 setup/uninstall 等不需要 config 的命令）
 fn init_console_logging() {
+    let timer = OffsetTime::new(
+        get_local_time_offset(),
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]"),
+    );
     tracing_subscriber::fmt()
+        .with_timer(timer)
         .with_env_filter("rtsp_recorder=info,rtsp_shared=info")
         .init();
 }
@@ -449,7 +461,11 @@ fn init_console_logging() {
 /// 根據設定初始化日誌（支援檔案輸出）
 fn init_logging(config: &config::Config) {
     let env_filter = tracing_subscriber::EnvFilter::new("rtsp_recorder=info,rtsp_shared=info");
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    let timer = OffsetTime::new(
+        get_local_time_offset(),
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]"),
+    );
+    let fmt_layer = tracing_subscriber::fmt::layer().with_timer(timer.clone());
 
     if config.log.to_file {
         // 建立日誌目錄
@@ -476,6 +492,7 @@ fn init_logging(config: &config::Config) {
         Box::leak(Box::new(_guard));
 
         let file_layer = tracing_subscriber::fmt::layer()
+            .with_timer(timer)
             .with_writer(non_blocking)
             .with_ansi(false);  // 檔案不需要 ANSI 顏色碼
 
