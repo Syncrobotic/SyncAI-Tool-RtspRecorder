@@ -12,12 +12,20 @@ use crate::stats::Stats;
 async fn is_network_idle(interface: &str, threshold_mbps: u32) -> bool {
     // 讀取 /sys/class/net/{interface}/statistics/rx_bytes
     let interface_name = if interface == "auto" {
-        // 自動偵測：找第一個非 lo 的介面
+        // 自動偵測：找第一個有載波的非 lo 介面
         if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name != "lo" {
-                    return check_bandwidth(&name, threshold_mbps).await;
+                if name == "lo" || name.starts_with("docker") || name.starts_with("br-") || name.starts_with("veth") {
+                    continue; // 跳過 loopback 和 docker 介面
+                }
+                // 檢查是否有載波
+                let carrier_path = format!("/sys/class/net/{}/carrier", name);
+                if let Ok(carrier) = std::fs::read_to_string(&carrier_path) {
+                    if carrier.trim() == "1" {
+                        tracing::debug!("[網路] 自動選擇介面: {}", name);
+                        return check_bandwidth(&name, threshold_mbps).await;
+                    }
                 }
             }
         }
@@ -31,7 +39,8 @@ async fn is_network_idle(interface: &str, threshold_mbps: u32) -> bool {
 
 #[cfg(target_os = "linux")]
 async fn check_bandwidth(interface: &str, threshold_mbps: u32) -> bool {
-    let path = format!("/sys/class/net/{}/statistics/rx_bytes", interface);
+    // 判斷上傳流量 (tx_bytes)
+    let path = format!("/sys/class/net/{}/statistics/tx_bytes", interface);
     
     // 讀取第一次
     let bytes1: u64 = match std::fs::read_to_string(&path) {
@@ -134,18 +143,32 @@ pub async fn smart_upload(
     stats: Arc<Mutex<Stats>>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
+    tracing::info!("[智慧上傳] 啟動，interface={}, threshold={}Mbps", 
+        config.network.interface, config.network.idle_threshold_mbps);
+    
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
     
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 // 檢查網路是否閒置
-                if !is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await {
-                    tracing::debug!("[上傳] 網路忙碌，跳過");
+                let idle = is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await;
+                if !idle {
+                    tracing::info!("[智慧上傳] 網路忙碌(>{}Mbps)，跳過", config.network.idle_threshold_mbps);
                     continue;
                 }
 
                 // 掃描並上傳 MP4 檔案
+                let mp4_count = std::fs::read_dir(&config.output.dir)
+                    .map(|e| e.flatten().filter(|f| f.path().extension().and_then(|x| x.to_str()) == Some("mp4")).count())
+                    .unwrap_or(0);
+                
+                if mp4_count == 0 {
+                    continue;
+                }
+                
+                tracing::info!("[智慧上傳] 網路閒置，準備上傳 {} 個檔案", mp4_count);
+                
                 match std::fs::read_dir(&config.output.dir) {
                     Ok(entries) => {
                         for entry in entries.flatten() {
@@ -153,7 +176,7 @@ pub async fn smart_upload(
                             if path.extension().and_then(|e| e.to_str()) == Some("mp4") {
                                 // 再次檢查網路
                                 if !is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await {
-                                    tracing::debug!("[上傳] 網路變忙碌，暫停");
+                                    tracing::info!("[智慧上傳] 網路變忙碌，暫停上傳");
                                     break;
                                 }
                                 
@@ -169,7 +192,7 @@ pub async fn smart_upload(
                 }
             }
             _ = shutdown.recv() => {
-                tracing::info!("[上傳] 停止智慧上傳");
+                tracing::info!("[智慧上傳] 停止");
                 break;
             }
         }
