@@ -194,7 +194,8 @@ async fn background_converter(
     stats: Arc<Mutex<Stats>>,
     mut shutdown: broadcast::Receiver<()>,
     ff: FfmpegPaths,
-    resolution: String,
+    streams: Vec<StreamConfig>,
+    default_resolution: String,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     
@@ -212,6 +213,16 @@ async fn background_converter(
                                 use std::os::unix::fs::PermissionsExt;
                                 let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
                             }
+                            // 從檔名取得 stream name，查找對應的解析度設定
+                            let resolution = path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .and_then(|name| name.split('_').next())
+                                .and_then(|stream_name| {
+                                    streams.iter()
+                                        .find(|s| s.name == stream_name)
+                                        .and_then(|s| s.resolution.clone())
+                                })
+                                .unwrap_or_else(|| default_resolution.clone());
                             // 檢查檔案是否正在寫入（修改時間 > 10 秒前）
                             if let Ok(metadata) = path.metadata() {
                                 if let Ok(modified) = metadata.modified() {
@@ -258,9 +269,10 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
     let converter_shutdown = shutdown_tx.subscribe();
     let output_dir = config.output.dir.clone();
     let converter_ff = ff.clone();
-    let converter_resolution = config.output.resolution.clone();
+    let converter_streams = config.rtsp.streams.clone();
+    let converter_default_resolution = config.output.resolution.clone();
     tokio::spawn(async move {
-        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff, converter_resolution).await;
+        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff, converter_streams, converter_default_resolution).await;
         tracing::error!("[轉檔] 背景任務意外結束");
     });
 

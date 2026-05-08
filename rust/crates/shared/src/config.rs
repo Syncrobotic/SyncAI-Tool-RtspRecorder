@@ -26,6 +26,9 @@ pub struct RtspConfig {
 pub struct StreamConfig {
     pub name: String,
     pub url: String,
+    /// 此串流的輸出解析度（可選，留空使用全域設定）
+    #[serde(default)]
+    pub resolution: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
