@@ -401,6 +401,7 @@ async fn background_cleanup(
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                // 1. 清理舊影片檔案
                 let threshold = std::time::SystemTime::now()
                     - std::time::Duration::from_secs(config.retention.max_hours as u64 * 3600);
                 let mut deleted = 0u64;
@@ -428,7 +429,39 @@ async fn background_cleanup(
                 if deleted > 0 {
                     let mut s = stats.lock().await;
                     s.record_cleanup(deleted);
-                    tracing::info!("[清理] 本次刪除 {} 個舊檔案", deleted);
+                    tracing::info!("[清理] 本次刪除 {} 個舊影片檔案", deleted);
+                }
+
+                // 2. 清理舊日誌檔案
+                if config.log.to_file && config.log.retention_days > 0 {
+                    let log_threshold = std::time::SystemTime::now()
+                        - std::time::Duration::from_secs(config.log.retention_days as u64 * 86400);
+                    let mut log_deleted = 0u64;
+
+                    if let Ok(entries) = std::fs::read_dir(&config.log.dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            // 只清理 rtsp-recorder 的日誌檔案
+                            if !name.starts_with("rtsp-recorder") || !name.ends_with(".log") {
+                                continue;
+                            }
+                            if let Ok(meta) = path.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if modified < log_threshold {
+                                        if std::fs::remove_file(&path).is_ok() {
+                                            tracing::info!("[清理] 已刪除舊日誌: {:?}", path.file_name());
+                                            log_deleted += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if log_deleted > 0 {
+                        tracing::info!("[清理] 本次刪除 {} 個舊日誌檔案", log_deleted);
+                    }
                 }
             }
             _ = shutdown.recv() => {

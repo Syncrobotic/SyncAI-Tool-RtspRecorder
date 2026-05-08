@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 use rtsp_shared::{config, ffmpeg, stats, uploader};
 
@@ -59,18 +61,15 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日誌
-    tracing_subscriber::fmt()
-        .with_env_filter("rtsp_recorder=info,rtsp_shared=info")
-        .init();
-
     let cli = Cli::parse();
 
-    // Setup / Uninstall 不需要事先存在 config
+    // Setup / Uninstall 不需要事先存在 config，使用簡單的 console 日誌
     if matches!(cli.command, Some(Commands::Setup)) {
+        init_console_logging();
         return setup::run_setup_wizard(&cli.config).await;
     }
     if matches!(cli.command, Some(Commands::Uninstall)) {
+        init_console_logging();
         return setup::run_uninstall(&cli.config).await;
     }
 
@@ -78,6 +77,7 @@ async fn main() -> Result<()> {
     let config = match config::Config::load(&cli.config) {
         Ok(c) => c,
         Err(e) => {
+            init_console_logging();
             if !cli.config.exists() {
                 println!("❌ 找不到設定檔: {}", cli.config.display());
                 println!();
@@ -88,6 +88,9 @@ async fn main() -> Result<()> {
             return Err(e);
         }
     };
+
+    // 根據設定初始化日誌（支援檔案輸出）
+    init_logging(&config);
     tracing::info!("已載入設定檔: {:?}", cli.config);
 
     // P0: 設定 GCS 憑證環境變數（程式啟動時設定一次，避免多執行緒 data race）
@@ -434,4 +437,59 @@ WantedBy=multi-user.target
     }
 
     Ok(())
+}
+
+/// 初始化 console 日誌（用於 setup/uninstall 等不需要 config 的命令）
+fn init_console_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter("rtsp_recorder=info,rtsp_shared=info")
+        .init();
+}
+
+/// 根據設定初始化日誌（支援檔案輸出）
+fn init_logging(config: &config::Config) {
+    let env_filter = tracing_subscriber::EnvFilter::new("rtsp_recorder=info,rtsp_shared=info");
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    if config.log.to_file {
+        // 建立日誌目錄
+        if let Err(e) = std::fs::create_dir_all(&config.log.dir) {
+            eprintln!("無法建立日誌目錄 {:?}: {}", config.log.dir, e);
+            // 退回到只用 console
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .init();
+            return;
+        }
+
+        // 根據 rotation 設定建立 file appender
+        let file_appender = match config.log.rotation.as_str() {
+            "time" | "daily" => tracing_appender::rolling::daily(&config.log.dir, "rtsp-recorder.log"),
+            "hourly" => tracing_appender::rolling::hourly(&config.log.dir, "rtsp-recorder.log"),
+            _ => tracing_appender::rolling::daily(&config.log.dir, "rtsp-recorder.log"),
+        };
+
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        
+        // 保持 guard 存活（使用 Box::leak 避免 guard 被 drop）
+        Box::leak(Box::new(_guard));
+
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false);  // 檔案不需要 ANSI 顏色碼
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(file_layer)
+            .init();
+
+        tracing::info!("日誌檔案: {:?}", config.log.dir);
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+    }
 }
