@@ -31,7 +31,8 @@ pub async fn detect_video_codec(file_path: &Path, ff: &FfmpegPaths) -> Option<St
 
 /// 轉檔 MKV -> MP4
 /// resolution: 例如 "1920x1080"，空字串或 "original" 表示不縮放
-pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str) -> Result<Option<std::path::PathBuf>> {
+/// force_reencode: 強制重新編碼（確保最大播放兼容性）
+pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str, force_reencode: bool) -> Result<Option<std::path::PathBuf>> {
     if !mkv_path.exists() {
         return Ok(None);
     }
@@ -49,8 +50,8 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str)
     let mkv_str = mkv_path.to_str().ok_or_else(|| anyhow::anyhow!("路徑含無效 UTF-8: {:?}", mkv_path))?;
     let mp4_str = mp4_path.to_str().ok_or_else(|| anyhow::anyhow!("路徑含無效 UTF-8: {:?}", mp4_path))?;
 
-    // H.264 可以直接複製；HEVC/MJPEG 需要重新編碼為 H.264 以確保播放相容性
-    if !is_mjpeg && !is_hevc {
+    // H.264 可以直接複製；HEVC/MJPEG/force_reencode 需要重新編碼為 H.264 以確保播放相容性
+    if !is_mjpeg && !is_hevc && !force_reencode {
         // 嘗試直接複製（僅限 H.264 等通用編碼）
         let args = vec![
             "-y",
@@ -61,6 +62,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str)
             "-b:a", "128k",
             "-ar", "44100",
             "-movflags", "+faststart",
+            "-brand", "mp42",  // 增加 Mac/Linux 播放器兼容性
             "-avoid_negative_ts", "make_zero",
             mp4_str,
         ];
@@ -110,6 +112,7 @@ pub async fn convert_to_mp4(mkv_path: &Path, ff: &FfmpegPaths, resolution: &str)
         "-b:a".to_string(), "128k".to_string(),
         "-ar".to_string(), "44100".to_string(),
         "-movflags".to_string(), "+faststart".to_string(),
+        "-brand".to_string(), "mp42".to_string(),  // 增加 Mac/Linux 播放器兼容性
         "-avoid_negative_ts".to_string(), "make_zero".to_string(),
         mp4_str.to_string(),
     ]);

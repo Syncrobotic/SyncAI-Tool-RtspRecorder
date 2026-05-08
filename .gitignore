@@ -29,3 +29,6 @@ ffmpeg-bin/
 .vscode/
 *.swp
 *.swo
+.DS_Store
+**/.DS_Store
+rust/crates/ros2-bridge/

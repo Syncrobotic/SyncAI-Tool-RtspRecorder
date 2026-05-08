@@ -46,6 +46,9 @@ pub struct OutputConfig {
     /// 輸出解析度，例如 "1920x1080"。留空或 "original" 表示不縮放
     #[serde(default = "default_resolution")]
     pub resolution: String,
+    /// 強制重新編碼（確保最大播放兼容性，但會增加 CPU 使用）
+    #[serde(default)]
+    pub force_reencode: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,15 +120,31 @@ fn expand_tilde(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// 解析路徑：先展開 ~，再將相對路徑轉為相對於 base_dir 的絕對路徑
+fn resolve_path(path: &Path, base_dir: &Path) -> PathBuf {
+    let expanded = expand_tilde(path);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        base_dir.join(expanded)
+    }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let mut config: Config = serde_yaml::from_str(&content)?;
 
-        // P1: 展開所有路徑中的 ~
-        config.output.dir = expand_tilde(&config.output.dir);
-        config.gcs.credentials = expand_tilde(&config.gcs.credentials);
-        config.log.dir = expand_tilde(&config.log.dir);
+        // 取得 config 檔案所在目錄，作為相對路徑的基準
+        let base_dir = path.parent()
+            .map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p })
+            .unwrap_or(Path::new("."));
+        let base_dir = std::fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+
+        // P1: 解析所有路徑（展開 ~ 並將相對路徑轉為絕對路徑）
+        config.output.dir = resolve_path(&config.output.dir, &base_dir);
+        config.gcs.credentials = resolve_path(&config.gcs.credentials, &base_dir);
+        config.log.dir = resolve_path(&config.log.dir, &base_dir);
 
         Ok(config)
     }

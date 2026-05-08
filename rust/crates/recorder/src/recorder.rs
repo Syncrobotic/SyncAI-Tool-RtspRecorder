@@ -196,6 +196,7 @@ async fn background_converter(
     ff: FfmpegPaths,
     streams: Vec<StreamConfig>,
     default_resolution: String,
+    force_reencode: bool,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     
@@ -227,7 +228,7 @@ async fn background_converter(
                             if let Ok(metadata) = path.metadata() {
                                 if let Ok(modified) = metadata.modified() {
                                     if modified.elapsed().map(|d| d.as_secs() > 10).unwrap_or(false) {
-                                        match converter::convert_to_mp4(&path, &ff, &resolution).await {
+                                        match converter::convert_to_mp4(&path, &ff, &resolution, force_reencode).await {
                                             Ok(Some(_)) => {
                                                 let mut stats = stats.lock().await;
                                                 stats.record_conversion(true);
@@ -271,8 +272,9 @@ pub async fn run_daemon(config: &Config, stats: Arc<Mutex<Stats>>, ff: &FfmpegPa
     let converter_ff = ff.clone();
     let converter_streams = config.rtsp.streams.clone();
     let converter_default_resolution = config.output.resolution.clone();
+    let converter_force_reencode = config.output.force_reencode;
     tokio::spawn(async move {
-        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff, converter_streams, converter_default_resolution).await;
+        background_converter(output_dir, converter_stats, converter_shutdown, converter_ff, converter_streams, converter_default_resolution, converter_force_reencode).await;
         tracing::error!("[轉檔] 背景任務意外結束");
     });
 

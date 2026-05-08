@@ -139,11 +139,8 @@ fn generate_config(config_path: &Path) -> Result<()> {
     let end_hour = ask_with_default("   錄製結束時間 (24h)", "1")?;
     let end_h: u32 = end_hour.parse().unwrap_or(1);
 
-    // 輸出
-    let default_dir = dirs::home_dir()
-        .map(|h| h.join("rtsp-recorder/videos").display().to_string())
-        .unwrap_or_else(|| "./videos".to_string());
-    let output_dir = ask_with_default("   輸出目錄", &default_dir)?;
+    // 輸出 (預設使用相對路徑，方便部署)
+    let output_dir = ask_with_default("   輸出目錄", "videos")?;
 
     // GCS
     let bucket = ask_with_default("   GCS Bucket 名稱", "recording")?;
@@ -156,6 +153,13 @@ fn generate_config(config_path: &Path) -> Result<()> {
     // 保留
     let retention = ask_with_default("   本地檔案保留時數", "6")?;
     let retention_h: u32 = retention.parse().unwrap_or(6);
+
+    // 日誌目錄 (相對於輸出目錄)
+    let log_dir = if output_dir.starts_with('/') || output_dir.starts_with('~') {
+        format!("{}/logs", output_dir)
+    } else {
+        format!("{}/logs", output_dir)
+    };
 
     // 產生串流 YAML
     let mut streams_yaml = String::new();
@@ -181,6 +185,7 @@ schedule:
 output:
   dir: "{output_dir}"
   resolution: "{resolution}"
+  force_reencode: false
 
 gcs:
   bucket: "{bucket}"
@@ -195,7 +200,7 @@ retention:
   max_hours: {retention_h}
 
 log:
-  dir: "{output_dir}/logs"
+  dir: "{log_dir}"
   rotation: "time"
   retention_days: 30
   to_file: true
@@ -210,6 +215,7 @@ log:
         prefix = prefix,
         cred_path = cred_path,
         retention_h = retention_h,
+        log_dir = log_dir,
     );
 
     std::fs::write(config_path, &yaml)?;
@@ -269,6 +275,7 @@ After=network.target
 [Service]
 Type=simple
 User={user}
+Environment="TZ=Asia/Taipei"
 Environment="GOOGLE_APPLICATION_CREDENTIALS={gcs_credentials}"
 ExecStart="{exe}" --config "{config}" --daemon
 Restart=always
