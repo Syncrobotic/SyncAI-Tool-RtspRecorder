@@ -174,6 +174,25 @@ pub async fn smart_upload(
                         for entry in entries.flatten() {
                             let path = entry.path();
                             if path.extension().and_then(|e| e.to_str()) == Some("mp4") {
+                                // 檢查對應的 .mkv 是否還存在（表示轉檔可能還在進行中）
+                                let mkv_path = path.with_extension("mkv");
+                                if mkv_path.exists() {
+                                    tracing::debug!("[智慧上傳] 跳過 {:?}，對應 .mkv 還存在", path.file_name());
+                                    continue;
+                                }
+                                
+                                // 檢查檔案修改時間（如果太近表示可能還在寫入）
+                                if let Ok(meta) = path.metadata() {
+                                    if let Ok(modified) = meta.modified() {
+                                        if let Ok(elapsed) = modified.elapsed() {
+                                            if elapsed.as_secs() < 10 {
+                                                tracing::debug!("[智慧上傳] 跳過 {:?}，檔案剛剛被修改", path.file_name());
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                
                                 // 再次檢查網路
                                 if !is_network_idle(&config.network.interface, config.network.idle_threshold_mbps).await {
                                     tracing::info!("[智慧上傳] 網路變忙碌，暫停上傳");
@@ -210,6 +229,7 @@ pub async fn upload_all(config: &Config, stats: Option<Arc<Mutex<Stats>>>) -> Re
 
     let mut uploaded = 0;
     let mut failed = 0;
+    let mut skipped = 0;
 
     for entry in std::fs::read_dir(output_dir)? {
         let entry = entry?;
@@ -217,6 +237,27 @@ pub async fn upload_all(config: &Config, stats: Option<Arc<Mutex<Stats>>>) -> Re
 
         // 只上傳 mp4 檔案
         if path.extension().and_then(|e| e.to_str()) == Some("mp4") {
+            // 檢查對應的 .mkv 是否還存在（表示轉檔可能還在進行中）
+            let mkv_path = path.with_extension("mkv");
+            if mkv_path.exists() {
+                tracing::info!("[上傳] 跳過 {:?}，對應 .mkv 還存在（轉檔中）", path.file_name());
+                skipped += 1;
+                continue;
+            }
+            
+            // 檢查檔案修改時間（如果太近表示可能還在寫入）
+            if let Ok(meta) = path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed.as_secs() < 10 {
+                            tracing::info!("[上傳] 跳過 {:?}，檔案剛剛被修改", path.file_name());
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            
             match upload_file(config, &path, stats.clone()).await {
                 Ok(_) => uploaded += 1,
                 Err(e) => {
@@ -227,6 +268,6 @@ pub async fn upload_all(config: &Config, stats: Option<Arc<Mutex<Stats>>>) -> Re
         }
     }
 
-    tracing::info!("[上傳] 完成: ✅{} ❌{}", uploaded, failed);
+    tracing::info!("[上傳] 完成: ✅{} ❌{} ⏭️{}", uploaded, failed, skipped);
     Ok(())
 }
