@@ -471,8 +471,11 @@ fn init_console_logging() {
 /// 根據設定初始化日誌（支援檔案輸出）
 fn init_logging(config: &config::Config) {
     let env_filter = tracing_subscriber::EnvFilter::new("rtsp_recorder=info,rtsp_shared=info");
+    // 使用 config 中的 utc_offset，確保與其他時間一致
+    let offset = time::UtcOffset::from_hms(config.schedule.utc_offset as i8, 0, 0)
+        .unwrap_or(time::UtcOffset::UTC);
     let timer = OffsetTime::new(
-        get_local_time_offset(),
+        offset,
         time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]"),
     );
     let fmt_layer = tracing_subscriber::fmt::layer().with_timer(timer.clone());
