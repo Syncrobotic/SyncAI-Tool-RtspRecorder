@@ -138,6 +138,8 @@ fn generate_config(config_path: &Path) -> Result<()> {
     let start_h: u32 = start_hour.parse().unwrap_or(8);
     let end_hour = ask_with_default("   錄製結束時間 (24h)", "1")?;
     let end_h: u32 = end_hour.parse().unwrap_or(1);
+    let utc_offset_str = ask_with_default("   UTC 時區偏移 (例如 8 = UTC+8)", "0")?;
+    let utc_offset: i32 = utc_offset_str.parse().unwrap_or(0);
 
     // 輸出 (預設使用相對路徑，方便部署)
     let output_dir = ask_with_default("   輸出目錄", "videos")?;
@@ -181,6 +183,7 @@ rtsp:
 schedule:
   record_start_hour: {start_h}
   record_end_hour: {end_h}
+  utc_offset: {utc_offset}  # UTC{utc_offset:+}
 
 output:
   dir: "{output_dir}"
@@ -209,6 +212,7 @@ log:
         segment_duration = segment_duration,
         start_h = start_h,
         end_h = end_h,
+        utc_offset = utc_offset,
         output_dir = output_dir,
         resolution = resolution,
         bucket = bucket,
