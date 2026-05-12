@@ -135,8 +135,16 @@ async fn record_channel(
         
         tracing::info!("[{}] 啟動錄製（每 {}s 分段）", stream_name, current_duration);
 
+        // POSIX TZ 格式符號相反：UTC+8 要設成 "UTC-8"
+        let tz = if config.schedule.utc_offset >= 0 {
+            format!("UTC-{}", config.schedule.utc_offset)
+        } else {
+            format!("UTC+{}", -config.schedule.utc_offset)
+        };
+
         let mut child = Command::new(&ff.ffmpeg)
             .args(&args)
+            .env("TZ", &tz)  // 確保檔名使用正確時區
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null())

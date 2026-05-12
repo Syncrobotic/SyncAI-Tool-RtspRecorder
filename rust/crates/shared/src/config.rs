@@ -37,6 +37,9 @@ pub struct ScheduleConfig {
     pub record_start_hour: u32,
     #[serde(default = "default_end_hour")]
     pub record_end_hour: u32,
+    /// UTC 時區偏移（例如 8 代表 UTC+8，-5 代表 UTC-5）
+    #[serde(default = "default_utc_offset")]
+    pub utc_offset: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +94,7 @@ pub struct LogConfig {
 fn default_segment_duration() -> u32 { 600 }
 fn default_start_hour() -> u32 { 8 }
 fn default_end_hour() -> u32 { 1 }
+fn default_utc_offset() -> i32 { 0 }  // 預設 UTC+0
 fn default_output_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

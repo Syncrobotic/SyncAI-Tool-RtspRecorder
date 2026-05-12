@@ -90,9 +90,19 @@ async fn main() -> Result<()> {
         }
     };
 
+    // P0: 設定時區環境變數（確保所有時間相關操作使用正確時區）
+    // POSIX TZ 格式符號相反：UTC+8 要設成 "UTC-8"
+    let tz = if config.schedule.utc_offset >= 0 {
+        format!("UTC-{}", config.schedule.utc_offset)
+    } else {
+        format!("UTC+{}", -config.schedule.utc_offset)
+    };
+    std::env::set_var("TZ", &tz);
+    
     // 根據設定初始化日誌（支援檔案輸出）
     init_logging(&config);
     tracing::info!("已載入設定檔: {:?}", cli.config);
+    tracing::info!("時區: UTC{:+}", config.schedule.utc_offset);
 
     // P0: 設定 GCS 憑證環境變數（程式啟動時設定一次，避免多執行緒 data race）
     // cloud-storage crate: SERVICE_ACCOUNT = 檔案路徑
